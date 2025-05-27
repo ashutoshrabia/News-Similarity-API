@@ -72,8 +72,8 @@ The Streamlit folder contains an interactive app wrapping the same similarity se
 
 ### Live Demo
 
-[https://e3ygzgdzgxkpydoc9wmtvg.streamlit.app/](https://e3ygzgdzgxkpydoc9wmtvg.streamlit.app/)
-
+[[https://e3ygzgdzgxkpydoc9wmtvg.streamlit.app/](https://e3ygzgdzgxkpydoc9wmtvg.streamlit.app/)
+](https://mndskscmu6xvwanzp7xuqj.streamlit.app/)
 ### Features
 
 - Sidebar inputs: query text and number of results (top_k).
