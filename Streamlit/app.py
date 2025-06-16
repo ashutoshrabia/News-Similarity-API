@@ -9,16 +9,13 @@ import streamlit as st
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ─── Pydantic model ────────────────────────────────────────────────────────────
 class SearchQuery(BaseModel):
     query: str
     top_k: int = 5
 
-# ─── Document store with precompute support ───────────────────────────────────
 class DocumentStore:
     def __init__(self, csv_path: str = "Articles.csv"):
         self.csv_path = csv_path
@@ -29,7 +26,7 @@ class DocumentStore:
         self._load_index_or_csv()
 
     def _load_index_or_csv(self):
-        # Try loading precomputed index & metadata
+        # loading precomputed index & metadata
         if os.path.exists("index.faiss") and os.path.exists("metadata.json"):
             logger.info("Loading precomputed FAISS index and metadata")
             self.index = faiss.read_index("index.faiss")
@@ -56,18 +53,17 @@ class DocumentStore:
         articles = df["Article"].astype(str).tolist()
         logger.info(f"Loaded {len(articles)} articles from CSV")
 
-        # load model and compute embeddings
+        
         logger.info("Loading SentenceTransformer model...")
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
         logger.info("Computing embeddings for all articles...")
         embeddings = self.model.encode(articles, show_progress_bar=True)
 
-        # build FAISS index
+      
         self.index = faiss.IndexFlatL2(self.dimension)
         self.index.add(embeddings)
         logger.info(f"Added {len(articles)} embeddings to FAISS index")
 
-        # store document metadata
         for idx, row in df.iterrows():
             self.documents.append({
                 "id": idx,
@@ -81,7 +77,7 @@ class DocumentStore:
     def search(self, query: str, top_k: int = 5):
         if self.index is None:
             raise RuntimeError("Index not loaded")
-        # embed the query (load model if needed)
+        
         if self.model is None:
             self.model = SentenceTransformer("all-MiniLM-L6-v2")
         query_emb = self.model.encode([query])[0]
@@ -95,22 +91,18 @@ class DocumentStore:
                 results.append({**doc, "similarity": float(similarity)})
         return results
 
-# ─── Streamlit caching for performance ────────────────────────────────────────
 @st.cache_resource
 def get_document_store(csv_path: str = "Articles.csv") -> DocumentStore:
     return DocumentStore(csv_path)
 
-# ─── Streamlit App UI ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="News Article Similarity Search", layout="wide")
 st.title("News Article Similarity Search")
 
-# Sidebar: inputs
 st.sidebar.header("Search Parameters")
 query = st.sidebar.text_input("Enter search query:")
 top_k = st.sidebar.slider("Number of results (top_k):", 1, 10, 5)
 search_button = st.sidebar.button("Search")
 
-# Load document store
 doc_store = get_document_store()
 
 if search_button and query:
