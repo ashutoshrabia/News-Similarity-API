@@ -23,7 +23,6 @@ app = FastAPI(
     version="1.0.3"
 )
 
-# Serve static files (images, CSS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class SearchQuery(BaseModel):
@@ -74,8 +73,6 @@ class DocumentStore:
         return results
 
 doc_store = DocumentStore()
-
-# HTML head with Bootstrap and custom styles
 
 def get_head(title: str) -> str:
     return f"""
