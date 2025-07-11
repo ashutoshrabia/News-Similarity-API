@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import faiss
@@ -13,13 +14,17 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Cache directory for Hugging Face
 os.environ["HF_HOME"] = "/app/cache"
 
 app = FastAPI(
     title="News Article Similarity Search API",
     description="API for finding similar news articles",
-    version="1.0.0"
+    version="1.0.3"
 )
+
+# Serve static files (images, CSS)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class SearchQuery(BaseModel):
     query: str
@@ -28,172 +33,144 @@ class SearchQuery(BaseModel):
 class DocumentStore:
     def __init__(self, csv_path: str = "Articles.csv"):
         self.model = None
-        self.dimension = 384  
+        self.dimension = 384
         self.index = None
         self.documents = []
         self.csv_path = csv_path
         self.load_csv()
 
     def load_csv(self):
-        logger.info(f"Looking for the CSV at: {self.csv_path}")
+        logger.info(f"Loading CSV from: {self.csv_path}")
         if not os.path.exists(self.csv_path):
-            logger.error(f"Couldn’t find the CSV file at {self.csv_path}")
-            raise FileNotFoundError(f"CSV file not found at {self.csv_path}")
-
-        logger.info(f"Loading the CSV from {self.csv_path}")
+            raise FileNotFoundError(f"CSV not found at {self.csv_path}")
         df = pd.read_csv(self.csv_path, encoding='latin1')
-        logger.info(f"Found these columns in the CSV: {df.columns.tolist()}")
-
-        required_columns = ['Article', 'Date', 'Heading', 'NewsType']
-        if not all(col in df.columns for col in required_columns):
-            logger.error(f"Missing some required columns. Found: {df.columns.tolist()}")
-            raise ValueError("CSV needs Article, Date, Heading, and NewsType columns!")
-
-        # Grabbing all the articles as a list of strings
+        for col in ['Article','Date','Heading','NewsType']:
+            if col not in df.columns:
+                raise ValueError(f"Missing column: {col}")
         articles = df['Article'].astype(str).tolist()
-        logger.info(f"Loaded {len(articles)} articles from the CSV")
-
-        # Loading the model and turning the articles into embeddings
-        logger.info("Loading the SentenceTransformer model...")
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("Turning articles into embeddings...")
         embeddings = self.model.encode(articles, show_progress_bar=True)
-
-        # Setting up FAISS to do fast similarity searches
         self.index = faiss.IndexFlatL2(self.dimension)
-        self.index.add(embeddings)
-        logger.info(f"Added {len(embeddings)} embeddings to the FAISS index")
-
-        for idx, row in df.iterrows():
+        self.index.add(np.array(embeddings))
+        for idx,row in df.iterrows():
             self.documents.append({
                 'id': idx,
-                'article': str(row['Article']),
-                'date': str(row['Date']),
-                'heading': str(row['Heading']),
-                'news_type': str(row['NewsType'])
+                'article': row['Article'],
+                'date': row['Date'],
+                'heading': row['Heading'],
+                'news_type': row['NewsType']
             })
-        logger.info(f"Saved {len(self.documents)} documents for later")
+        logger.info(f"Indexed {len(self.documents)} articles")
 
     def search(self, query: str, top_k: int = 5) -> List[Dict]:
-        # Making sure everything’s ready before we search
-        if not self.model or not self.index:
-            logger.error("Something’s wrong—DocumentStore isn’t set up right")
-            raise RuntimeError("DocumentStore isn’t ready. Missing model or index.")
-
-        logger.info(f"Searching for: {query}, returning top {top_k} results")
-        query_embedding = self.model.encode([query])[0]
-
-        distances, indices = self.index.search(np.array([query_embedding]), top_k)
+        embed = self.model.encode([query])[0]
+        dists, idxs = self.index.search(np.array([embed]), top_k)
         results = []
-
-        for idx, dist in zip(indices[0], distances[0]):
-            if idx != -1 and idx < len(self.documents):
-                doc = self.documents[idx]
-                similarity = 1 - (dist / 2) 
-                results.append({
-                    'id': doc['id'],
-                    'article': doc['article'],
-                    'date': doc['date'],
-                    'heading': doc['heading'],
-                    'news_type': doc['news_type'],
-                    'similarity': float(similarity)
-                })
-        logger.info(f"Got {len(results)} results for the query: {query}")
+        for dist, idx in zip(dists[0], idxs[0]):
+            if idx < 0 or idx >= len(self.documents): continue
+            doc = self.documents[idx]
+            sim = 1 - (dist/2)
+            results.append({**doc, 'similarity': float(sim)})
         return results
 
 doc_store = DocumentStore()
 
-# Some basic CSS 
-def get_styles():
-    return """
-    <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f4f4; text-align: center; }
-        .container { max-width: 800px; margin: 50px auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }
-        h1 { color: #333; }
-        a { text-decoration: none; color: #007BFF; }
-        a:hover { text-decoration: underline; }
-        ul { list-style-type: none; padding: 0; }
-        li { background: #fff; margin: 10px 0; padding: 15px; border-radius: 5px; box-shadow: 0 0 5px rgba(0, 0, 0, 0.1); text-align: left; }
-        .search-box { margin: 20px 0; }
-        input[type="text"], input[type="number"] { padding: 10px; width: 70%; border: 1px solid #ccc; border-radius: 5px; }
-        input[type="submit"] { padding: 10px 20px; border: none; background: #007BFF; color: white; border-radius: 5px; cursor: pointer; }
-        input[type="submit"]:hover { background: #0056b3; }
-    </style>
+# HTML head with Bootstrap and custom styles
+
+def get_head(title: str) -> str:
+    return f"""
+    <head>
+      <meta charset=\"utf-8\">
+      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+      <title>{title}</title>
+      <link href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css\" rel=\"stylesheet\">
+      <style>
+        html, body {{ height: 100%; margin: 0; }}
+        body {{ background: #e9ecef; }}
+        .hero {{ position: relative; width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #343a40; }}
+        .hero img {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.3; z-index: 0; }}
+        .hero .content {{ position: relative; z-index: 1; color: #fff; text-align: center; }}
+        .hero h1 {{ font-weight: 800; font-size: 4rem; }}
+        .hero p {{ font-size: 1.5rem; }}
+        .form-range {{ width: 150px; }}
+        .accordion-button {{ font-weight: bold; }}
+      </style>
+      <script src=\"https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js\"></script>
+    </head>
     """
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting up the app...")
     if not doc_store.documents:
-        logger.error("Uh oh, DocumentStore didn’t load any documents")
-        raise RuntimeError("DocumentStore didn’t load properly")
-    logger.info("App started up fine!")
+        raise RuntimeError("No articles loaded.")
 
-# The main page 
 @app.get("/", response_class=HTMLResponse)
 async def root():
+    head = get_head("News API Home")
     return f"""
-    <html>
-        <head><title>News Article Similarity Search</title>{get_styles()}</head>
-        <body>
-            <div class="container">
-                <h1>Welcome to News Article Similarity Search API</h1>
-                <p>Go to <a href="/search">search</a> to try a search.</p>
-                <p>Or use the <a href="/docs">API Docs</a> for POST requests.</p>
-            </div>
-        </body>
-    </html>
+    <html>{head}<body>
+      <div class=\"hero\">
+        <img src=\"/static/free-old-newspaper-vector.jpg\" alt=\"Newspaper Background\"> 
+        <div class=\"content\">
+          <h1 class=\"display-3\">News Similarity Explorer</h1>
+          <p class=\"lead\">Instantly find related news articles and explore insights!</p>
+          <a href=\"/search\" class=\"btn btn-lg btn-primary\">Start Searching</a>
+        </div>
+      </div>
+    </body></html>
     """
 
 @app.get("/search", response_class=HTMLResponse)
 async def search_form(request: Request, query: str = "", top_k: int = 5):
-    if not query:  
+    head = get_head("Search News")
+    if not query:
         return f"""
-        <html>
-            <head><title>Search Articles</title>{get_styles()}</head>
-            <body>
-                <div class="container">
-                    <h1>Search Articles</h1>
-                    <form method="get" class="search-box">
-                        <input type="text" name="query" placeholder="Enter search query" required>
-                        <input type="number" name="top_k" value="5" min="1" max="10">
-                        <input type="submit" value="Search">
-                    </form>
-                </div>
-            </body>
-        </html>
+        <html>{head}<body>
+          <div class=\"container py-5\">
+            <h2 class=\"text-center mb-4\">🔍 Search News Articles</h2>
+            <form method=\"get\" class=\"d-flex justify-content-center gap-2\">
+              <input type=\"text\" name=\"query\" class=\"form-control w-50\" placeholder=\"Your search term...\" required>
+              <input type=\"number\" name=\"top_k\" class=\"form-control w-auto\" value=\"5\" min=\"1\" max=\"20\" title=\"Number of results\">
+              <button type=\"submit\" class=\"btn btn-success\">Go</button>
+            </form>
+          </div>
+        </body></html>
         """
-
     results = doc_store.search(query, top_k)
-    html_content = f"""
-    <html>
-        <head><title>Search Results</title>{get_styles()}</head>
-        <body>
-            <div class="container">
-                <h1>Search Results for "{query}"</h1>
-                <p><a href="/search">New Search</a></p>
-                <ul>
+    items = "\n".join([
+        f"""
+        <div class=\"accordion-item\">
+          <h2 class=\"accordion-header\" id=\"heading{r['id']}\">
+            <button class=\"accordion-button collapsed\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#collapse{r['id']}\" aria-expanded=\"false\" aria-controls=\"collapse{r['id']}\">
+              {r['heading']} &mdash; <small class=\"text-muted\">{r['date']}, {r['news_type']}</small> <span class=\"badge bg-info ms-2\">{r['similarity']:.2f}</span>
+            </button>
+          </h2>
+          <div id=\"collapse{r['id']}\" class=\"accordion-collapse collapse\" aria-labelledby=\"heading{r['id']}\" data-bs-parent=\"#resultsAccordion\">
+            <div class=\"accordion-body\">{r['article']}</div>
+          </div>
+        </div>""" for r in results
+    ])
+    return f"""
+    <html>{head}<body>
+      <div class=\"container py-5\">
+        <h2 class=\"mb-4\">Results for: <em>{query}</em></h2>
+        <div class=\"accordion\" id=\"resultsAccordion\">
+          {items if items else '<p class=\"text-muted\">No matches found.</p>'}
+        </div>
+        <div class=\"text-center mt-4\">
+          <a href=\"/search\" class=\"btn btn-outline-primary\">🔄 New Search</a>
+        </div>
+      </div>
+    </body></html>
     """
-    for result in results:
-        html_content += f"""
-            <li>
-                <strong>{result['heading']}</strong> ({result['date']}) - {result['news_type']}<br>
-                <em>Similarity: {result['similarity']:.2f}</em><br>
-                {result['article'][:200]}...
-            </li>
-        """
-    html_content += """</ul></div></body></html>"""
-    return HTMLResponse(content=html_content)
 
 @app.post("/api/search")
-async def search_documents(query: SearchQuery):
-    results = doc_store.search(query=query.query, top_k=query.top_k)
-    return {"results": results}
+async def api_search(query: SearchQuery):
+    return {"results": doc_store.search(query.query, query.top_k)}
 
 @app.get("/api/search")
-async def search_documents_get(q: str, top_k: int = 5):
-    results = doc_store.search(query=q, top_k=top_k)
-    return {"results": results}
+async def api_search_get(q: str, top_k: int = 5):
+    return {"results": doc_store.search(q, top_k)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=7860)
